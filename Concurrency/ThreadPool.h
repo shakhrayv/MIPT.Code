@@ -70,8 +70,6 @@ private:
 template <class T>
 class ThreadPool {
 public:
-    ThreadPool(): ThreadPool(default_num_workers()) {}
-    
     explicit ThreadPool(const size_t num_threads): capacity(num_threads), off(false), workers(num_threads), tasks(num_threads) {
         for (auto it = workers.begin(); it != workers.end(); it++)
             *it = std::thread([this](){
@@ -80,6 +78,11 @@ public:
                     task();
             });
     }
+    
+    ThreadPool(): ThreadPool(default_num_workers()) {}
+    
+    ThreadPool(ThreadPool& other) = delete;
+    ThreadPool& operator=(ThreadPool& other) = delete;
     
     std::future<T> Submit(std::function<T()> task) {
         std::packaged_task<T()> current_task(task);
