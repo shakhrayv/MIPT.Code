@@ -28,7 +28,7 @@ public:
         
         producer_cv.wait(lock, [this](){return box.size()!=capacity || off; });
         if (off)
-            std::bad_exception("system shutdown");
+            throw std::bad_exception();
         box.push_back(std::move(element));
         consumer_cv.notify_one();
     }
