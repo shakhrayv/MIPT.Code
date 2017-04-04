@@ -11,9 +11,57 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <forward_list>
 #include <functional>
 #include <vector>
+
+class ReadWriteLock {
+public:
+    ReadWriteLock() {
+        writers_.store(0);
+        readers_.store(0);
+        write_state.store(false);
+    }
+    
+    void ReadLock() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        read_cv_.wait(lock, [this](){ return !writers_.load(); });
+        readers_.fetch_add(1);
+    }
+    
+    void ReadUnlock() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        readers_.fetch_sub(1);
+        if (readers_.load() == 0)
+            write_cv_.notify_one();
+    }
+    
+    void WriteLock() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        writers_.fetch_add(1);
+        write_cv_.wait(lock, [this](){ return readers_.load() == 0 && !write_state; });
+        write_state.store(true);
+    }
+    
+    void WriteUnlock() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        writers_.fetch_sub(1);
+        write_state.store(false);
+        write_cv_.notify_one();
+        read_cv_.notify_all();
+    }
+    
+private:
+    std::atomic<size_t> writers_;
+    std::atomic<size_t> readers_;
+    std::atomic<bool> write_state;
+    
+    std::condition_variable read_cv_;
+    std::condition_variable write_cv_;
+    
+    std::mutex mutex_;
+};
 
 template <typename T, class Hash = std::hash<T>>
 class StripedHashSet {
@@ -34,23 +82,23 @@ public:
         const size_t hash_value = hash(element);
         
         std::size_t stripe_index = GetStripeIndex(hash_value);
-        locks_[stripe_index].lock();
+        locks_[stripe_index].WriteLock();
         
         std::size_t bucket_index = GetBucketIndex(hash_value);
         auto it = std::find(hash_table_[bucket_index].begin(), hash_table_[bucket_index].end(), element);
         
         if (it != hash_table_[bucket_index].end()) {
-            locks_[stripe_index].unlock();
+            locks_[stripe_index].WriteUnlock();
             return false;
         }
         if (GetLoadFactor() > max_load_factor_) {
-            locks_[stripe_index].unlock();
+            locks_[stripe_index].WriteUnlock();
             Rehash();
             return Insert(element);
         } else {
             hash_table_[bucket_index].push_front(element);
             num_elements_.fetch_add(1);
-            locks_[stripe_index].unlock();
+            locks_[stripe_index].WriteUnlock();
             return true;
         }
     }
@@ -59,19 +107,19 @@ public:
         const size_t hash_value = hash(element);
         
         std::size_t stripe_index = GetStripeIndex(hash_value);
-        locks_[stripe_index].lock();
+        locks_[stripe_index].WriteLock();
         
         std::size_t bucket_index = GetBucketIndex(hash_value);
         auto it = std::find(hash_table_[bucket_index].begin(), hash_table_[bucket_index].end(), element);
         
         if (it == hash_table_[bucket_index].end()) {
-            locks_[stripe_index].unlock();
+            locks_[stripe_index].WriteUnlock();
             return false;
         }
         
         hash_table_[bucket_index].remove(*it);
         num_elements_.fetch_sub(1);
-        locks_[stripe_index].unlock();
+        locks_[stripe_index].WriteUnlock();
         
         return true;
     }
@@ -80,11 +128,11 @@ public:
         const size_t hash_value = hash(element);
         
         std::size_t stripe_index = GetStripeIndex(hash_value);
-        locks_[stripe_index].lock();
+        locks_[stripe_index].ReadLock();
         
         std::size_t bucket_index = GetBucketIndex(hash_value);
         bool found = std::find(hash_table_[bucket_index].begin(), hash_table_[bucket_index].end(), element) != hash_table_[bucket_index].end();
-        locks_[stripe_index].unlock();
+        locks_[stripe_index].ReadUnlock();
         
         return found;
     }
@@ -98,12 +146,12 @@ private:
     void Rehash() {
         
         for (std::size_t i = 0; i < num_stripes_; i++) {
-            locks_[i].lock();
+            locks_[i].WriteLock();
         }
         
         if (GetLoadFactor() <= max_load_factor_) {
             for (std::size_t i = 0; i < num_stripes_; i++) {
-                locks_[i].unlock();
+                locks_[i].WriteUnlock();
             }
             return;
         }
@@ -120,7 +168,7 @@ private:
         hash_table_ = std::move(temp);
         
         for (std::size_t i = 0; i < num_stripes_; i++) {
-            locks_[i].unlock();
+            locks_[i].WriteUnlock();
         }
     }
     
@@ -142,7 +190,7 @@ private:
     std::atomic<size_t> num_elements_;
     const std::size_t num_stripes_;
     
-    std::vector<std::mutex> locks_;
+    std::vector<ReadWriteLock> locks_;
     std::vector<std::forward_list<T>> hash_table_;
     
     Hash hash;
@@ -151,4 +199,3 @@ private:
 template <typename T> using ConcurrentSet = StripedHashSet<T>;
 
 #endif /* StripedHashSet_h */
-
