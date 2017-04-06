@@ -5,7 +5,6 @@
 #include <atomic>
 #include <limits>
 
-#undef DEBUG
 ///////////////////////////////////////////////////////////////////////
 
 template <typename T>
@@ -34,7 +33,7 @@ class SpinLock {
         idle.exchange(true);
     }
 
-    // adapters for BasicLockable concept
+    // Adapters for BasicLockable concept
 
     void lock() {
         Lock();
